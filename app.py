@@ -4,6 +4,7 @@ from chromadb.utils import embedding_functions
 from faster_whisper import WhisperModel
 from groq import Groq
 import uuid
+import hashlib
 import datetime
 import numpy as np
 import soundfile as sf
@@ -122,18 +123,25 @@ with col2:
 
 user_message = None
 
-if audio_file is not None:
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-        f.write(audio_file.read())
-        tmp_path = f.name
-    with st.spinner("Transcribing..."):
-        user_message = transcribe(tmp_path)
-    os.unlink(tmp_path)
-    if user_message:
-        st.toast(f"Heard: {user_message}")
-
-elif text_input:
+# st.audio_input keeps the last recording across reruns, so a clip would be
+# handled again on every later interaction. Typed text is checked first, and a
+# recording is only transcribed the first time its contents are seen.
+if text_input:
     user_message = text_input
+
+elif audio_file is not None:
+    audio_bytes = audio_file.getvalue()
+    audio_hash = hashlib.sha256(audio_bytes).hexdigest()
+    if audio_hash != st.session_state.get("last_audio_hash"):
+        st.session_state.last_audio_hash = audio_hash
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            f.write(audio_bytes)
+            tmp_path = f.name
+        with st.spinner("Transcribing..."):
+            user_message = transcribe(tmp_path)
+        os.unlink(tmp_path)
+        if user_message:
+            st.toast(f"Heard: {user_message}")
 
 if user_message:
     st.session_state.messages.append({"role": "user", "content": user_message})
