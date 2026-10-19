@@ -4,7 +4,7 @@ A voice chatbot that understands Hindi and English and recalls earlier parts of 
 
 ## What it does
 
-- **Voice or text input.** Speak into the browser microphone or type. Speech is transcribed locally with Whisper (`faster-whisper`, `base` model, CPU, int8), which detects Hindi or English automatically.
+- **Voice or text input.** Speak into the browser microphone or type. By default speech is transcribed locally with Whisper (`faster-whisper`, `base` model, CPU, int8). On Render it uses Groq's hosted `whisper-large-v3-turbo` instead (see Deploy). Both detect Hindi or English automatically.
 - **Long-term memory through semantic search.** Each exchange is embedded with `all-MiniLM-L6-v2` (Chroma's built-in ONNX version, so no PyTorch) and stored in ChromaDB. Before every reply, the 3 most similar past exchanges *of the same user* are retrieved and added to the system prompt.
 - **Short-term memory.** The last 10 messages of the current session are sent with every request.
 - **Replies in the user's language.** LLaMA 3.1 8B (`llama-3.1-8b-instant`) through the Groq API, with a warm, concise persona.
@@ -44,6 +44,26 @@ Instead of exporting the key, you can copy `.streamlit/secrets.toml.example` to 
 
 The first run downloads the Whisper and embedding models (about 220 MB), so it takes a minute.
 
+## Deploy on Render (free plan)
+
+The repo includes a Render Blueprint (`render.yaml`).
+
+1. In the Render dashboard, choose **New → Blueprint** and select this repository.
+2. When asked, enter your `GROQ_API_KEY` (a free key from console.groq.com). It is stored as a secret in Render and is never committed.
+3. Click **Apply**. When the build finishes, open the service URL.
+
+**Why Render transcribes with Groq.** Render's free plan has 512 MB of RAM. Measured peak memory:
+
+| Setup | Peak RAM |
+|---|---|
+| Local Whisper `base` + embedder | ~680 MB (too much) |
+| Local Whisper `tiny` + embedder | ~530 MB (too much) |
+| Groq hosted Whisper + embedder | **~300 MB** |
+
+So `render.yaml` sets `IRA_TRANSCRIBER=groq`. The same Groq key is used, no local speech model is loaded, and `whisper-large-v3-turbo` is more accurate for Hindi than `base`. The trade-off is that recordings are sent to Groq; with the default `local` setting they never leave the machine.
+
+On the free plan the service sleeps after 15 minutes without traffic. The next visit takes about a minute to wake up, and memories kept in RAM are cleared. The first message after a start also downloads the 80 MB embedding model.
+
 ## Deploy (Streamlit Community Cloud, free)
 
 1. Go to [share.streamlit.io](https://share.streamlit.io), sign in with GitHub, and click **Create app**.
@@ -54,13 +74,15 @@ The first run downloads the Whisper and embedding models (about 220 MB), so it t
    ```
 4. Click **Deploy**. The first start takes a few minutes while it installs packages and downloads the models.
 
-The app uses about 700 MB of RAM with both models loaded. That's why it runs on Streamlit Community Cloud and not on Render's free plan, which has a 512 MB limit. Microphone access requires HTTPS, which the deployed URL provides.
+Here the app can keep local Whisper, because Streamlit Community Cloud allows more than the ~700 MB it needs. Microphone access requires HTTPS, which both deployed URLs provide.
 
 Optional settings (environment variables):
 
 | Variable | Effect |
 |---|---|
 | `GROQ_API_KEY` | Required. Read from the environment or from `st.secrets`. |
+| `IRA_TRANSCRIBER` | `local` (default): faster-whisper on the server. `groq`: Groq's hosted `whisper-large-v3-turbo`, no local model. |
+| `WHISPER_MODEL` | Local Whisper size, default `base` (`tiny`, `small` … also work). |
 | `IRA_MEMORY_DIR` | Store memories on disk in this folder instead of in memory. Only useful on a host with a persistent disk. |
 
 ## Current limitations

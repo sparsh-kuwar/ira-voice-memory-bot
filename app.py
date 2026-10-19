@@ -1,7 +1,6 @@
 import streamlit as st
 import chromadb
 from chromadb.utils import embedding_functions
-from faster_whisper import WhisperModel
 from groq import Groq
 import uuid
 import hashlib
@@ -21,9 +20,17 @@ st.markdown("""
 
 # ── LOAD MODELS (cached so they only load once) ──
 
+# "local" runs faster-whisper on this machine (audio stays here). "groq" sends the
+# audio to Groq's hosted Whisper, which needs no local model: local Whisper adds
+# about 200 MB of RAM, too much for Render's 512 MB plan.
+TRANSCRIBER = os.environ.get("IRA_TRANSCRIBER", "local")
+
 @st.cache_resource
 def load_whisper():
-    return WhisperModel("base", device="cpu", compute_type="int8")
+    # Imported here so the "groq" transcriber never loads the local model
+    from faster_whisper import WhisperModel
+    size = os.environ.get("WHISPER_MODEL", "base")
+    return WhisperModel(size, device="cpu", compute_type="int8", cpu_threads=2)
 
 @st.cache_resource
 def load_chroma():
@@ -53,7 +60,7 @@ def load_groq():
         st.stop()
     return Groq(api_key=key)
 
-whisper_model  = load_whisper()
+whisper_model  = load_whisper() if TRANSCRIBER == "local" else None
 memory_collection = load_chroma()
 groq_client    = load_groq()
 
@@ -96,9 +103,22 @@ def retrieve_memory(query):
 
 # ── TRANSCRIBE ──
 
-def transcribe(audio_path):
-    segments, _ = whisper_model.transcribe(audio_path)
-    return " ".join(seg.text for seg in segments).strip()
+def transcribe(audio_bytes):
+    if TRANSCRIBER == "groq":
+        resp = groq_client.audio.transcriptions.create(
+            file=("speech.wav", audio_bytes),
+            model="whisper-large-v3-turbo"
+        )
+        return resp.text.strip()
+
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        f.write(audio_bytes)
+        tmp_path = f.name
+    try:
+        segments, _ = whisper_model.transcribe(tmp_path)
+        return " ".join(seg.text for seg in segments).strip()
+    finally:
+        os.unlink(tmp_path)
 
 # ── LLM ──
 
@@ -154,16 +174,11 @@ elif audio_file is not None:
     audio_hash = hashlib.sha256(audio_bytes).hexdigest()
     if audio_hash != st.session_state.get("last_audio_hash"):
         st.session_state.last_audio_hash = audio_hash
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-            f.write(audio_bytes)
-            tmp_path = f.name
         try:
             with st.spinner("Transcribing..."):
-                user_message = transcribe(tmp_path)
+                user_message = transcribe(audio_bytes)
         except Exception:
             st.error("Couldn't transcribe that recording. Please try again.")
-        finally:
-            os.unlink(tmp_path)
         if user_message:
             st.toast(f"Heard: {user_message}")
 

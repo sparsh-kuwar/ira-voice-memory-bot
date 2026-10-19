@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: ira-voice-memory-bot
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: streamlit run app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true
+    healthCheckPath: /_stcore/health
+    envVars:
+      - key: GROQ_API_KEY
+        sync: false
+      # Groq's hosted Whisper instead of a local model: local Whisper would push
+      # memory past the free plan's 512 MB
+      - key: IRA_TRANSCRIBER
+        value: groq
