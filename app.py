@@ -6,8 +6,6 @@ from groq import Groq
 import uuid
 import hashlib
 import datetime
-import numpy as np
-import soundfile as sf
 import tempfile
 import os
 
@@ -15,7 +13,7 @@ st.set_page_config(page_title="Ira — Voice Memory Chatbot", page_icon="🎙️
 
 st.markdown("""
 <div style="text-align:center; padding: 10px 0 5px;">
-    <h1 style="color:#1a1a4e;">🎙️ Ira</h1>
+    <h1>🎙️ Ira</h1>
     <p style="color:#555;">Voice-powered · Remembers you · Hindi & English</p>
     <p style="color:#aaa; font-size:0.8rem;">Built by Sparsh Kuwar · Whisper + ChromaDB + Groq</p>
 </div>
@@ -29,18 +27,29 @@ def load_whisper():
 
 @st.cache_resource
 def load_chroma():
-    client = chromadb.Client()
-    emb_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
-        model_name="all-MiniLM-L6-v2"
-    )
+    # IRA_MEMORY_DIR keeps memories on disk across restarts; without it they live in memory
+    memory_dir = os.environ.get("IRA_MEMORY_DIR")
+    client = chromadb.PersistentClient(path=memory_dir) if memory_dir else chromadb.Client()
+    # Chroma's default embedder is all-MiniLM-L6-v2 run with ONNX, so torch is not needed
+    emb_fn = embedding_functions.DefaultEmbeddingFunction()
     collection = client.get_or_create_collection("chat_memory", embedding_function=emb_fn)
     return collection
 
-@st.cache_resource
-def load_groq():
+def get_groq_key():
+    # Environment variable locally and on Render, st.secrets on Streamlit Community Cloud
     key = os.environ.get("GROQ_API_KEY", "")
     if not key:
-        st.error("Set GROQ_API_KEY: run `export GROQ_API_KEY='your_key'` in terminal before launching.")
+        try:
+            key = st.secrets.get("GROQ_API_KEY", "")
+        except Exception:
+            key = ""
+    return key
+
+@st.cache_resource
+def load_groq():
+    key = get_groq_key()
+    if not key:
+        st.error("GROQ_API_KEY is not set. Export it before launching, or add it to the app's secrets when deployed.")
         st.stop()
     return Groq(api_key=key)
 
@@ -49,6 +58,12 @@ memory_collection = load_chroma()
 groq_client    = load_groq()
 
 # ── SESSION STATE ──
+
+# The vector store is shared by everyone using the deployed app, so each browser gets
+# its own user id, kept in the URL (?user=...). Bookmarking that URL keeps the memories.
+if "user_id" not in st.session_state:
+    st.session_state.user_id = st.query_params.get("user") or uuid.uuid4().hex[:12]
+st.query_params["user"] = st.session_state.user_id
 
 if "session_id" not in st.session_state:
     st.session_state.session_id = str(uuid.uuid4())
@@ -61,15 +76,20 @@ def save_to_memory(user_msg, bot_msg):
     memory_collection.add(
         documents=[f"User said: {user_msg}\nBot replied: {bot_msg}"],
         ids=[str(uuid.uuid4())],
-        metadatas=[{"session_id": st.session_state.session_id,
+        metadatas=[{"user_id": st.session_state.user_id,
+                    "session_id": st.session_state.session_id,
                     "timestamp": str(datetime.datetime.now())}]
     )
 
+def memory_count():
+    return len(memory_collection.get(where={"user_id": st.session_state.user_id}, include=[])["ids"])
+
 def retrieve_memory(query):
-    total = memory_collection.count()
+    total = memory_count()
     if total == 0:
         return ""
-    results = memory_collection.query(query_texts=[query], n_results=min(3, total))
+    results = memory_collection.query(query_texts=[query], n_results=min(3, total),
+                                      where={"user_id": st.session_state.user_id})
     if not results["documents"] or not results["documents"][0]:
         return ""
     return "\n\nRelevant past memories:\n" + "\n".join(f"- {m}" for m in results["documents"][0])
@@ -137,9 +157,13 @@ elif audio_file is not None:
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             f.write(audio_bytes)
             tmp_path = f.name
-        with st.spinner("Transcribing..."):
-            user_message = transcribe(tmp_path)
-        os.unlink(tmp_path)
+        try:
+            with st.spinner("Transcribing..."):
+                user_message = transcribe(tmp_path)
+        except Exception:
+            st.error("Couldn't transcribe that recording. Please try again.")
+        finally:
+            os.unlink(tmp_path)
         if user_message:
             st.toast(f"Heard: {user_message}")
 
@@ -151,17 +175,26 @@ if user_message:
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
             memory_context = retrieve_memory(user_message)
-            bot_response = get_response(user_message, memory_context)
+            try:
+                bot_response = get_response(user_message, memory_context)
+            except Exception:
+                bot_response = None
+        if bot_response is None:
+            # Groq unavailable or rate-limited: drop the message so the chat history stays consistent
+            st.session_state.messages.pop()
+            st.error("Ira couldn't reply just now (the language model service is unavailable). Please try again.")
+        else:
             save_to_memory(user_message, bot_response)
-        st.write(bot_response)
+            st.write(bot_response)
 
-    st.session_state.messages.append({"role": "assistant", "content": bot_response})
+    if bot_response is not None:
+        st.session_state.messages.append({"role": "assistant", "content": bot_response})
 
 # ── SIDEBAR ──
 
 with st.sidebar:
     st.markdown("### 🧠 Memory Status")
-    st.info(f"Messages remembered: {memory_collection.count()}")
+    st.info(f"Messages remembered: {memory_count()}")
     st.markdown(f"Session ID: `{st.session_state.session_id[:8]}...`")
     if st.button("🔄 New Session"):
         st.session_state.session_id = str(uuid.uuid4())

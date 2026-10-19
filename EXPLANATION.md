@@ -45,13 +45,14 @@ This guide is for explaining and defending the project in an interview. Each sec
 
 Say these before the interviewer finds them. Knowing your project's limits reads as maturity.
 
-1. **Memory is in-process only.** `chromadb.Client()` is an in-memory client, so memories are lost when the app restarts. *Fix:* `chromadb.PersistentClient(path="memory_db")`, a one-line change.
-2. **Memory is not filtered by session or user.** The session id is stored as metadata but `query()` has no `where` filter. Fine for one user. For several users I would add `where={"user_id": ...}`.
-3. **The embedding model is English-centric.** `all-MiniLM-L6-v2` was trained mostly on English, so Hindi (especially Devanagari) memories retrieve less reliably. *Fix:* `paraphrase-multilingual-MiniLM-L12-v2` or `intfloat/multilingual-e5-small`.
+1. **Memory is in-process by default.** `chromadb.Client()` keeps memories in RAM, so they are lost when the app restarts or the free host puts it to sleep. Setting `IRA_MEMORY_DIR` switches to `chromadb.PersistentClient`, which only helps on a host with a persistent disk. Real production would use a hosted vector DB.
+2. **(Fixed for deployment) Memory used to be shared by everyone.** Once deployed, one cached ChromaDB collection serves every visitor, so user B could get user A's memories in their prompt. Now each browser gets a random `user_id` kept in the URL (`?user=…`), every memory is tagged with it, and `query()` uses `where={"user_id": ...}`. It's identification by link, not authentication: anyone with the URL sees those memories. Real accounts would be the next step.
+3. **The embedding model is English-centric.** The app uses Chroma's built-in ONNX version of `all-MiniLM-L6-v2`. It's the same model as the sentence-transformers one, but it avoids installing PyTorch (about 2 GB), which matters for a free host. It was trained mostly on English, so Hindi (especially Devanagari) memories retrieve less reliably. *Fix:* `paraphrase-multilingual-MiniLM-L12-v2` or `intfloat/multilingual-e5-small`.
 4. **(Fixed) Recorded audio used to be reprocessed on reruns.** Streamlit keeps the last recording in `st.audio_input` across reruns, and the old code checked audio before text, so after one recording every typed message was ignored and the same clip was transcribed and answered again. Now typed text is checked first, and a clip is only transcribed when the SHA-256 hash of its bytes differs from `st.session_state.last_audio_hash`. This is a good story for "tell me about a bug you fixed": the cause was a framework behaviour (Streamlit reruns the whole script and widgets keep their values), not a logic slip.
 5. **The current conversation is stored and retrieved twice.** Recent exchanges are in both the 10-message window and the vector store, so retrieval can return what is already in the window. *Fix:* exclude the current session's latest N exchanges from retrieval.
 6. **No relevance threshold.** Top 3 are always added, even when nothing is related. *Fix:* drop results above a distance cutoff.
-7. **No `requirements.txt`, tests or error handling** around the Groq call. If Groq is down, the app shows a stack trace.
+7. **(Fixed) Deployment readiness.** There is now a pinned `requirements.txt`, the key can come from `st.secrets`, and Groq or transcription failures show a friendly error instead of a stack trace. Pinning caught a real bug: the newest PyAV (19) removed an argument faster-whisper 1.2.1 still passes, so every voice message failed with `unexpected keyword argument 'metadata_errors'`. It's pinned to `av==18.1.0`. There are still no automated tests in the repo.
+8. **It needs about 700 MB of RAM** (Whisper + the ONNX embedder), so it's deployed on Streamlit Community Cloud. Render's 512 MB free plan would run out of memory.
 
 ## 6. Likely interview questions
 
@@ -74,7 +75,7 @@ Whisper detects the spoken language itself. The system prompt tells the model to
 Whisper usually transcribes it in one script, often Latin for Hinglish. The LLM handles mixed text well. Testing with real Hinglish samples is something I would add.
 
 **Q: How would you make this production-ready?**
-Persistent and per-user memory, a multilingual embedding model, a relevance cutoff, error handling and retries around Groq, a `requirements.txt` with pinned versions, and tests for `retrieve_memory` and prompt building. For scale, run Whisper as its own service, possibly on a GPU.
+Real user accounts instead of link-based ids, a hosted vector DB so memories survive restarts, a multilingual embedding model, a relevance cutoff, retries around Groq, and tests for `retrieve_memory` and prompt building. For scale, run Whisper as its own service, possibly on a GPU.
 
 **Q: Privacy concerns?**
 Transcription is local, but message text and retrieved memories go to Groq. Memories are personal data, so production would need consent, deletion ("forget this") and encryption at rest.
@@ -88,7 +89,7 @@ The same pattern, retrieve relevant history and give it to the LLM, is how a ser
 
 ## 8. What I would build next
 
-1. Persistent, per-user memory with a "forget" command.
+1. Real accounts and a hosted vector DB, with a "forget" command.
 2. A multilingual embedding model plus a relevance threshold.
 3. Automated tests (Streamlit's `AppTest` can drive the chat and audio widgets with the models stubbed out).
 4. Text-to-speech replies, for a full voice loop.

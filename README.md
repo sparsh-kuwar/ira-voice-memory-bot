@@ -5,7 +5,7 @@ A voice chatbot that understands Hindi and English and recalls earlier parts of 
 ## What it does
 
 - **Voice or text input.** Speak into the browser microphone or type. Speech is transcribed locally with Whisper (`faster-whisper`, `base` model, CPU, int8), which detects Hindi or English automatically.
-- **Long-term memory through semantic search.** Each exchange is embedded with `all-MiniLM-L6-v2` and stored in ChromaDB. Before every reply, the 3 most similar past exchanges are retrieved and added to the system prompt.
+- **Long-term memory through semantic search.** Each exchange is embedded with `all-MiniLM-L6-v2` (Chroma's built-in ONNX version, so no PyTorch) and stored in ChromaDB. Before every reply, the 3 most similar past exchanges *of the same user* are retrieved and added to the system prompt.
 - **Short-term memory.** The last 10 messages of the current session are sent with every request.
 - **Replies in the user's language.** LLaMA 3.1 8B (`llama-3.1-8b-instant`) through the Groq API, with a warm, concise persona.
 - **Streamlit UI** with a chat view, a microphone widget and a sidebar showing how many exchanges are stored.
@@ -28,25 +28,46 @@ Text box ───────────────────────�
 
 ## Stack
 
-`streamlit` · `faster-whisper` · `chromadb` · `sentence-transformers` · `groq` · `soundfile` · `numpy`
+`streamlit` · `faster-whisper` · `chromadb` · `groq` (versions pinned in `requirements.txt`)
 
 ## Run locally
 
 ```bash
-python3.11 -m venv venv
+python3.12 -m venv venv          # Python 3.11–3.13
 source venv/bin/activate
-pip install streamlit faster-whisper chromadb sentence-transformers groq soundfile numpy
-export GROQ_API_KEY="your_key_here"
+pip install -r requirements.txt
+export GROQ_API_KEY="your_key_here"   # free key from console.groq.com
 streamlit run app.py
 ```
 
-The first run downloads the Whisper and embedding models, so it takes a minute.
+Instead of exporting the key, you can copy `.streamlit/secrets.toml.example` to `.streamlit/secrets.toml` and put it there. That file is gitignored.
+
+The first run downloads the Whisper and embedding models (about 220 MB), so it takes a minute.
+
+## Deploy (Streamlit Community Cloud, free)
+
+1. Go to [share.streamlit.io](https://share.streamlit.io), sign in with GitHub, and click **Create app**.
+2. Pick this repository, branch `main` and main file `app.py`.
+3. Open **Advanced settings**, choose Python 3.12, and paste this into **Secrets**:
+   ```toml
+   GROQ_API_KEY = "your_groq_key_here"
+   ```
+4. Click **Deploy**. The first start takes a few minutes while it installs packages and downloads the models.
+
+The app uses about 700 MB of RAM with both models loaded. That's why it runs on Streamlit Community Cloud and not on Render's free plan, which has a 512 MB limit. Microphone access requires HTTPS, which the deployed URL provides.
+
+Optional settings (environment variables):
+
+| Variable | Effect |
+|---|---|
+| `GROQ_API_KEY` | Required. Read from the environment or from `st.secrets`. |
+| `IRA_MEMORY_DIR` | Store memories on disk in this folder instead of in memory. Only useful on a host with a persistent disk. |
 
 ## Current limitations
 
-- **Memory lasts only while the app runs.** The app uses `chromadb.Client()`, which keeps data in memory. Restarting Streamlit clears it. Switching to `chromadb.PersistentClient(path="memory_db")` would keep it on disk.
-- **Memory is shared across sessions.** Each memory is tagged with a session id, but retrieval does not filter by it, so "New Session" still sees older memories. That is intended for one user. Several users would need a per-user filter.
-- **Single user, no accounts.**
+- **Memory lasts only while the app runs.** By default memories are kept in memory, so a restart (or the free host putting the app to sleep) clears them. Setting `IRA_MEMORY_DIR` keeps them on disk where the host has a persistent disk.
+- **Users are identified by a link, not an account.** Each browser gets a random id in the URL (`?user=…`), and retrieval only searches that user's memories. Bookmarking the URL keeps your memories. Anyone with the link can see them, so it isn't real authentication.
+- **The Groq key is shared.** Everyone using the deployed app uses the owner's Groq key and its free-tier rate limit. If the limit is hit, Ira shows a friendly error instead of crashing.
 
 See [EXPLANATION.md](EXPLANATION.md) for a full walkthrough of the design and the trade-offs.
 
