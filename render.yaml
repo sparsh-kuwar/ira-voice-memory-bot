@@ -7,9 +7,13 @@ services:
     startCommand: streamlit run app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true
     healthCheckPath: /_stcore/health
     envVars:
+      # Fill in one of the two keys and leave the other empty.
+      # Groq is used if both are set.
+      - key: OPENAI_API_KEY
+        sync: false
       - key: GROQ_API_KEY
         sync: false
-      # Groq's hosted Whisper instead of a local model: local Whisper would push
-      # memory past the free plan's 512 MB
+      # The provider's hosted Whisper instead of a local model: local Whisper
+      # would push memory past the free plan's 512 MB
       - key: IRA_TRANSCRIBER
-        value: groq
+        value: api

@@ -4,3 +4,4 @@ faster-whisper==1.2.1
 av==18.1.0
 chromadb==1.5.9
 groq==1.7.0
+openai==3.35.1

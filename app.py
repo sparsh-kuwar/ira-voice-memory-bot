@@ -1,7 +1,6 @@
 import streamlit as st
 import chromadb
 from chromadb.utils import embedding_functions
-from groq import Groq
 import uuid
 import hashlib
 import datetime
@@ -14,20 +13,40 @@ st.markdown("""
 <div style="text-align:center; padding: 10px 0 5px;">
     <h1>🎙️ Ira</h1>
     <p style="color:#555;">Voice-powered · Remembers you · Hindi & English</p>
-    <p style="color:#aaa; font-size:0.8rem;">Built by Sparsh Kuwar · Whisper + ChromaDB + Groq</p>
+    <p style="color:#aaa; font-size:0.8rem;">Built by Sparsh Kuwar · Whisper + ChromaDB + Groq / OpenAI</p>
 </div>
 """, unsafe_allow_html=True)
 
 # ── LOAD MODELS (cached so they only load once) ──
 
-# "local" runs faster-whisper on this machine (audio stays here). "groq" sends the
-# audio to Groq's hosted Whisper, which needs no local model: local Whisper adds
-# about 200 MB of RAM, too much for Render's 512 MB plan.
+# "local" runs faster-whisper on this machine (audio stays here). "api" sends the
+# audio to the chat provider's hosted Whisper, which needs no local model: local
+# Whisper adds about 200 MB of RAM, too much for Render's 512 MB plan.
+# "groq" is accepted as an older name for "api".
 TRANSCRIBER = os.environ.get("IRA_TRANSCRIBER", "local")
+if TRANSCRIBER == "groq":
+    TRANSCRIBER = "api"
+
+# Groq is used when its key is set, otherwise OpenAI. Both SDKs share the same
+# chat.completions and audio.transcriptions interface.
+PROVIDERS = {
+    "groq": {
+        "name": "Groq",
+        "key": "GROQ_API_KEY",
+        "chat_model": "llama-3.1-8b-instant",
+        "transcribe_model": "whisper-large-v3-turbo"
+    },
+    "openai": {
+        "name": "OpenAI",
+        "key": "OPENAI_API_KEY",
+        "chat_model": os.environ.get("OPENAI_CHAT_MODEL", "gpt-4.1-mini"),
+        "transcribe_model": "whisper-1"
+    }
+}
 
 @st.cache_resource
 def load_whisper():
-    # Imported here so the "groq" transcriber never loads the local model
+    # Imported here so the "api" transcriber never loads the local model
     from faster_whisper import WhisperModel
     size = os.environ.get("WHISPER_MODEL", "base")
     return WhisperModel(size, device="cpu", compute_type="int8", cpu_threads=2)
@@ -42,27 +61,36 @@ def load_chroma():
     collection = client.get_or_create_collection("chat_memory", embedding_function=emb_fn)
     return collection
 
-def get_groq_key():
+def get_secret(name):
     # Environment variable locally and on Render, st.secrets on Streamlit Community Cloud
-    key = os.environ.get("GROQ_API_KEY", "")
+    key = os.environ.get(name, "").strip()
     if not key:
         try:
-            key = st.secrets.get("GROQ_API_KEY", "")
+            key = str(st.secrets.get(name, "")).strip()
         except Exception:
             key = ""
     return key
 
 @st.cache_resource
-def load_groq():
-    key = get_groq_key()
-    if not key:
-        st.error("GROQ_API_KEY is not set. Export it before launching, or add it to the app's secrets when deployed.")
-        st.stop()
-    return Groq(api_key=key)
+def load_llm():
+    """Return (provider name, client) for the first provider with a key."""
+    for provider, settings in PROVIDERS.items():
+        key = get_secret(settings["key"])
+        if not key:
+            continue
+        if provider == "groq":
+            from groq import Groq
+            return provider, Groq(api_key=key)
+        from openai import OpenAI
+        return provider, OpenAI(api_key=key)
+    st.error("No API key found. Set GROQ_API_KEY or OPENAI_API_KEY before launching, "
+             "or add one to the app's secrets when deployed.")
+    st.stop()
 
 whisper_model  = load_whisper() if TRANSCRIBER == "local" else None
 memory_collection = load_chroma()
-groq_client    = load_groq()
+provider, llm_client = load_llm()
+settings = PROVIDERS[provider]
 
 # ── SESSION STATE ──
 
@@ -104,10 +132,10 @@ def retrieve_memory(query):
 # ── TRANSCRIBE ──
 
 def transcribe(audio_bytes):
-    if TRANSCRIBER == "groq":
-        resp = groq_client.audio.transcriptions.create(
+    if TRANSCRIBER == "api":
+        resp = llm_client.audio.transcriptions.create(
             file=("speech.wav", audio_bytes),
-            model="whisper-large-v3-turbo"
+            model=settings["transcribe_model"]
         )
         return resp.text.strip()
 
@@ -134,8 +162,8 @@ Keep responses concise and human."""
         messages.append({"role": m["role"], "content": m["content"]})
     messages.append({"role": "user", "content": user_message})
 
-    resp = groq_client.chat.completions.create(
-        model="llama-3.1-8b-instant",
+    resp = llm_client.chat.completions.create(
+        model=settings["chat_model"],
         messages=messages,
         max_tokens=300,
         temperature=0.8
@@ -195,7 +223,7 @@ if user_message:
             except Exception:
                 bot_response = None
         if bot_response is None:
-            # Groq unavailable or rate-limited: drop the message so the chat history stays consistent
+            # LLM unavailable or rate-limited: drop the message so the chat history stays consistent
             st.session_state.messages.pop()
             st.error("Ira couldn't reply just now (the language model service is unavailable). Please try again.")
         else:
@@ -216,5 +244,5 @@ with st.sidebar:
         st.session_state.messages = []
         st.rerun()
     st.divider()
-    st.markdown("**Stack:** Whisper + ChromaDB + Groq LLaMA 3.1")
+    st.markdown(f"**Stack:** Whisper + ChromaDB + {settings['name']} `{settings['chat_model']}`")
     st.markdown("**Built by:** Sparsh Kuwar")

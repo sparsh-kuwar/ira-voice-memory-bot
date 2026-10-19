@@ -12,7 +12,7 @@ This guide is for explaining and defending the project in an interview. Each sec
 2. **Transcription** (`transcribe`). Audio is written to a temporary `.wav` file and passed to `faster-whisper` (`base` model, CPU, `int8`). Whisper detects the language itself, so there is no Hindi/English toggle.
 3. **Memory retrieval** (`retrieve_memory`). The message is embedded with `all-MiniLM-L6-v2` and ChromaDB returns the 3 nearest stored exchanges.
 4. **Prompt building** (`get_response`). System prompt (persona and "reply in the user's language") + retrieved memories + the last 10 chat messages + the new message.
-5. **Generation.** Groq `llama-3.1-8b-instant`, `max_tokens=300`, `temperature=0.8`.
+5. **Generation.** Groq `llama-3.1-8b-instant`, `max_tokens=300`, `temperature=0.8`. If only `OPENAI_API_KEY` is set, OpenAI `gpt-4.1-mini` is used instead. Both SDKs share the same `chat.completions` and `audio.transcriptions` interface, so a small `PROVIDERS` table in `app.py` is all the switch needs.
 6. **Memory write** (`save_to_memory`). The pair `"User said: … Bot replied: …"` is stored with a session id and timestamp.
 
 ## 3. Two kinds of memory (the main design idea)
@@ -52,7 +52,7 @@ Say these before the interviewer finds them. Knowing your project's limits reads
 5. **The current conversation is stored and retrieved twice.** Recent exchanges are in both the 10-message window and the vector store, so retrieval can return what is already in the window. *Fix:* exclude the current session's latest N exchanges from retrieval.
 6. **No relevance threshold.** Top 3 are always added, even when nothing is related. *Fix:* drop results above a distance cutoff.
 7. **(Fixed) Deployment readiness.** There is now a pinned `requirements.txt`, the key can come from `st.secrets`, and Groq or transcription failures show a friendly error instead of a stack trace. Pinning caught a real bug: the newest PyAV (19) removed an argument faster-whisper 1.2.1 still passes, so every voice message failed with `unexpected keyword argument 'metadata_errors'`. It's pinned to `av==18.1.0`. There are still no automated tests in the repo.
-8. **Memory limits shaped the deployment.** With local Whisper `base`, the app peaks at about 680 MB, and even `tiny` reaches about 530 MB, more than Render's 512 MB free plan. Measuring by component showed Whisper and the embedder each take about 200 MB. So on Render, `IRA_TRANSCRIBER=groq` sends audio to Groq's hosted `whisper-large-v3-turbo` and peaks at about 300 MB. That's a good trade-off story: it costs privacy (audio leaves the server) but improves Hindi accuracy and fits the free plan. Local transcription is still the default when running on your own machine.
+8. **Memory limits shaped the deployment.** With local Whisper `base`, the app peaks at about 680 MB, and even `tiny` reaches about 530 MB, more than Render's 512 MB free plan. Measuring by component showed Whisper and the embedder each take about 200 MB. So on Render, `IRA_TRANSCRIBER=api` sends audio to the provider's hosted Whisper (Groq `whisper-large-v3-turbo` or OpenAI `whisper-1`) and peaks at about 300–340 MB. That's a good trade-off story: it costs privacy (audio leaves the server) but improves Hindi accuracy and fits the free plan. Local transcription is still the default when running on your own machine.
 
 ## 6. Likely interview questions
 
@@ -78,7 +78,7 @@ Whisper usually transcribes it in one script, often Latin for Hinglish. The LLM 
 Real user accounts instead of link-based ids, a hosted vector DB so memories survive restarts, a multilingual embedding model, a relevance cutoff, retries around Groq, and tests for `retrieve_memory` and prompt building. For scale, run Whisper as its own service, possibly on a GPU.
 
 **Q: Privacy concerns?**
-With the default settings transcription is local, but message text and retrieved memories go to Groq. On Render the audio goes to Groq too (`IRA_TRANSCRIBER=groq`), because of the memory limit. Memories are personal data, so production would need consent, deletion ("forget this") and encryption at rest.
+With the default settings transcription is local, but message text and retrieved memories go to Groq. On Render the audio goes to the provider too (`IRA_TRANSCRIBER=api`), because of the memory limit. Memories are personal data, so production would need consent, deletion ("forget this") and encryption at rest.
 
 **Q: Why `max_tokens=300`?**
 Short replies suit conversation and voice, and keep latency and cost down.
