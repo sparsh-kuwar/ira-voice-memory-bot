@@ -2,6 +2,10 @@
 
 A voice chatbot that understands Hindi and English and recalls earlier parts of the conversation by meaning, not just the last few messages.
 
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/sparsh-kuwar/ira-voice-memory-bot)
+
+One click deploys it on Render's free plan. You only need a free Groq API key (see [Deploy on Render](#deploy-on-render-free-plan)).
+
 ## What it does
 
 - **Voice or text input.** Speak into the browser microphone or type. By default speech is transcribed locally with Whisper (`faster-whisper`, `base` model, CPU, int8). On Render it uses Groq's hosted `whisper-large-v3-turbo` instead (see Deploy). Both detect Hindi or English automatically.
@@ -46,7 +50,11 @@ The first run downloads the Whisper and embedding models (about 220 MB), so it t
 
 ## Deploy on Render (free plan)
 
-The repo includes a Render Blueprint (`render.yaml`).
+The repo includes a Render Blueprint (`render.yaml`). The quickest way is the button:
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/sparsh-kuwar/ira-voice-memory-bot)
+
+Or do it by hand:
 
 1. In the Render dashboard, choose **New → Blueprint** and select this repository.
 2. When asked, enter your `GROQ_API_KEY` (a free key from console.groq.com). It is stored as a secret in Render and is never committed.
